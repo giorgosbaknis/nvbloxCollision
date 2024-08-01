@@ -165,7 +165,22 @@ install(
 #   libstatistics_collector
 #   visualization_msgs
 #   cv_bridge
+#   nav_msgs
 #   # nvblox_ros_common
 # )
+
+ament_export_include_directories(
+  include
+)
+
+ament_export_dependencies(
+  nvblox
+  tf2_ros
+  message_filters
+  libstatistics_collector
+  visualization_msgs
+  cv_bridge
+  nav_msgs
+)
 
 ament_package()
