@@ -160,23 +160,42 @@ private:
 
     void create_transformation_matrix(const nav_msgs::msg::Odometry::SharedPtr msg)
     {
-        // Extract position
-        transform.translation() << msg->pose.pose.position.x,
-                                   msg->pose.pose.position.y,
-                                   msg->pose.pose.position.z;
-
-        // Extract orientation (quaternion) and convert to rotation matrix
-        Eigen::Quaternionf q(msg->pose.pose.orientation.w,
-                             msg->pose.pose.orientation.x,
-                             msg->pose.pose.orientation.y,
-                             msg->pose.pose.orientation.z);
-        transform.rotate(q);
         
         position << msg->pose.pose.position.x,
                                 msg->pose.pose.position.y,
                                 msg->pose.pose.position.z;
 
-        rotation_matrix = q.toRotationMatrix();
+        // rotation_matrix = q.toRotationMatrix();
+
+        // Extract position and orientation from odometry for base_link in world frame
+        Eigen::Isometry3f base_to_world = Eigen::Isometry3f::Identity();
+        base_to_world.translation() << msg->pose.pose.position.x,
+                                    msg->pose.pose.position.y,
+                                    msg->pose.pose.position.z;
+
+        Eigen::Quaternionf q_world(msg->pose.pose.orientation.w,
+                                msg->pose.pose.orientation.x,
+                                msg->pose.pose.orientation.y,
+                                msg->pose.pose.orientation.z);
+
+        rotation_matrix = q_world.toRotationMatrix();
+
+        base_to_world.rotate(q_world);
+
+        // Static transform from base_link to os_sensor (LiDAR frame)
+        Eigen::Isometry3f base_to_lidar = Eigen::Isometry3f::Identity();
+        // Translation is zero as per provided data
+        base_to_lidar.translation() << 0.0, 0.0, 0.0;
+
+        // Rotation quaternion from provided transform data
+        Eigen::Quaternionf q_lidar(0.9961947202682495, // w
+                                0.0,                 // x
+                                0.08715575188398361, // y
+                                0.0);                // z
+        base_to_lidar.rotate(q_lidar);
+
+        // Combine transformations to get LiDAR to world
+        transform = base_to_world * base_to_lidar;
 
     }
 
@@ -259,7 +278,7 @@ private:
 
     nav_msgs::msg::Odometry last_odometry_;
     Eigen::Isometry3f transform = Eigen::Isometry3f::Identity();
-    Mapper mapper{0.2f, MemoryType::kDevice};
+    Mapper mapper{0.3f, MemoryType::kDevice};
 
     MapperParams params;
 
