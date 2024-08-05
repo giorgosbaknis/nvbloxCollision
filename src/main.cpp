@@ -2,6 +2,8 @@
 #include "nav_msgs/msg/odometry.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
 #include "sensor_msgs/point_cloud2_iterator.hpp"
+#include "geometry_msgs/msg/point_stamped.hpp"
+#include "sensor_msgs/msg/image.hpp"
 #include <Eigen/Geometry>
 
 //Nvblox test libs 
@@ -15,7 +17,9 @@
 #include "nvblox/map/layer_cake.h"
 #include "nvblox/map/voxels.h"
 #include "nvblox/mapper/mapper.h"
+#include "nvblox/mapper/mapper_params.h"
 #include "nvblox/mapper/multi_mapper.h"
+
 
 #include <iostream>
 
@@ -28,10 +32,41 @@ public:
     TopicReader() : Node("topic_reader")
     {
         odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
-            "/odometry/imu", 10, std::bind(&TopicReader::odom_callback, this, std::placeholders::_1));
+            "/husky1/odometry/imu", 10, std::bind(&TopicReader::odom_callback, this, std::placeholders::_1));
         
         pc2_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
-            "/ouster/points", 10, std::bind(&TopicReader::pc2_callback, this, std::placeholders::_1));
+            "/husky1/ouster/points", 10, std::bind(&TopicReader::pc2_callback, this, std::placeholders::_1));
+         
+
+        // image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
+        //     "/husky1/ouster/signal_image", 10, std::bind(&TopicReader::image_callback, this, std::placeholders::_1));
+
+        // Publisher for collision point
+        collision_point_pub_ = this->create_publisher<geometry_msgs::msg::PointStamped>("/husky1/ouster/collision", 5);
+
+        params.esdf_slice_min_height = 0.0f;
+        params.esdf_slice_max_height = 1.0f;
+        params.esdf_slice_height = 1.0f;
+        params.projective_integrator_max_integration_distance_m = 7.0;
+        params.lidar_projective_integrator_max_integration_distance_m = 20.0;
+        params.projective_integrator_truncation_distance_vox = 4.0;
+        params.projective_integrator_weighting_mode = nvblox::WeightingFunctionType::kInverseSquareWeight;
+        params.projective_integrator_max_weight = 100.0;
+        params.free_region_occupancy_probability = 0.3;
+        params.occupied_region_occupancy_probability = 0.7;
+        params.unobserved_region_occupancy_probability = 0.5;
+        params.occupied_region_half_width_m = 0.1;
+        params.free_region_decay_probability = 0.55;
+        params.occupied_region_decay_probability = 0.4;
+        params.mesh_integrator_min_weight = 0.0001;
+        params.mesh_integrator_weld_vertices = true;
+        params.esdf_integrator_min_weight = 0.0001;
+        params.esdf_integrator_max_site_distance_vox = 1.0;
+        params.esdf_integrator_max_distance_m = 2.0;
+
+
+        mapper.setMapperParams(params);
+
     }
 
 private:
@@ -43,13 +78,12 @@ private:
                             lidar_.num_azimuth_divisions(), MemoryType::kUnified);
         depth_image_.setZero();
         
-        bool check;
         for (int idx = 0; idx < pointcloud_.rows(); idx++) {
             const Vector3f p_C = pointcloud_.row(idx);
             
             Index2D u_C ;
             
-            check = lidar_.project(p_C, &u_C);
+            lidar_.project(p_C, &u_C);
             
              if (u_C.y() >= 0 && u_C.y() < depth_image_.rows() && u_C.x() >= 0 && u_C.x() < depth_image_.cols()) {
                 depth_image_(u_C.y(), u_C.x()) = p_C.norm();
@@ -110,13 +144,16 @@ private:
             
         }
 
+        
+        
         DepthImage depth_image = depthImageFromPointcloud(pointcloud,lidar);
 
         mapper.integrateLidarDepth(depth_image,transform, lidar);
 
         // // Produce the ESDF
         mapper.updateEsdf();
-        
+        mapper.saveEsdfAsPly("./test.ply");
+
         checkCollision();
         
     }
@@ -151,7 +188,7 @@ private:
         int no_obstacle_flag = 0;
 
         // Define a vector pointing to the right in the local frame
-        Eigen::Vector3f right_vector(1.0f, 0.0f, 0.0f); 
+        Eigen::Vector3f right_vector(0.0f, -1.0f, 0.0f); 
 
         // Transform the right vector into the world frame
         Eigen::Vector3f world_right_vector = rotation_matrix * right_vector;
@@ -159,7 +196,7 @@ private:
         EsdfLayer& esdf_layer = mapper.esdf_layer(); 
         //cout<<"Robot Position: "<< position.transpose() <<endl;
 
-        for(float pos = 0.1f; pos<=5.0f; pos = pos + 0.1f){
+        for(float pos = 0.4f; pos<=5.0f; pos = pos + 0.2f){
             
             // Calculate the collision point untill 5 meters to the right
             collision_point = position + pos * world_right_vector;
@@ -169,8 +206,7 @@ private:
             if(result.first.observed && result.first.is_inside ){
                 RCLCPP_INFO(this->get_logger(), "Collision Point: x: %f, y: %f, z: %f",
                 collision_point.x(), collision_point.y(), collision_point.z());
-
-
+                
                 RCLCPP_INFO(this->get_logger(), "Position to the right: %f", pos);
                 
                 no_obstacle_flag = 1;
@@ -186,8 +222,24 @@ private:
             
         }
 
+
+        // Publish the collision point
+        publish_collision_point(collision_point);
+
     }
 
+
+    void publish_collision_point(const Eigen::Vector3f &point)
+    {
+        auto point_msg = geometry_msgs::msg::PointStamped();
+        point_msg.header.stamp = this->get_clock()->now();
+        point_msg.header.frame_id = "world";  // Set the frame ID as appropriate
+
+        point_msg.point.x = point.x();
+        point_msg.point.y = point.y();
+        point_msg.point.z = point.z();
+        collision_point_pub_->publish(point_msg);
+    }
 
     // const int num_azimuth_divisions = 1024;
     // const int num_elevation_divisions = 32;
@@ -197,13 +249,20 @@ private:
 
     const float vertical_fov_rad = 32.0 * M_PI / 180.0;
     const float min_valid_range_m = 0.0f;
-    const float max_valid_range_m = 20.0f;
+    const float max_valid_range_m = 7.0f;
 
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pc2_sub_;
+    // rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
+
+    rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr collision_point_pub_;
+
     nav_msgs::msg::Odometry last_odometry_;
     Eigen::Isometry3f transform = Eigen::Isometry3f::Identity();
     Mapper mapper{0.2f, MemoryType::kDevice};
+
+    MapperParams params;
+
     Lidar lidar{num_azimuth_divisions, num_elevation_divisions, min_valid_range_m,
                           max_valid_range_m, vertical_fov_rad};
     Eigen::Vector3f collision_point;
