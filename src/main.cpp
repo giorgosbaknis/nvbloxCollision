@@ -3,7 +3,7 @@
 #include "sensor_msgs/msg/point_cloud2.hpp"
 #include "sensor_msgs/point_cloud2_iterator.hpp"
 #include "geometry_msgs/msg/point_stamped.hpp"
-#include "sensor_msgs/msg/image.hpp"
+#include "sensor_msgs/msg/image.hpp" 
 #include <Eigen/Geometry>
 
 //Nvblox test libs 
@@ -19,7 +19,7 @@
 #include "nvblox/mapper/mapper.h"
 #include "nvblox/mapper/mapper_params.h"
 #include "nvblox/mapper/multi_mapper.h"
-
+#include "nvblox/sensors/image.h"
 
 #include <iostream>
 
@@ -33,13 +33,15 @@ public:
     {
         odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
             "/husky1/odometry/imu", 10, std::bind(&TopicReader::odom_callback, this, std::placeholders::_1));
-        
+
         pc2_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
             "/husky1/ouster/points", 10, std::bind(&TopicReader::pc2_callback, this, std::placeholders::_1));
-         
 
-        // image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
-        //     "/husky1/ouster/signal_image", 10, std::bind(&TopicReader::image_callback, this, std::placeholders::_1));
+        image_color_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
+            "/husky1/camera/color/image_raw", 10, std::bind(&TopicReader::image_color_callback, this, std::placeholders::_1));
+
+        image_depth_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
+            "/husky1/camera/aligned_depth_to_color/image_raw", 10, std::bind(&TopicReader::image_depth_callback, this, std::placeholders::_1));
 
         // Publisher for collision point
         collision_point_pub_ = this->create_publisher<geometry_msgs::msg::PointStamped>("/husky1/ouster/collision", 5);
@@ -97,6 +99,8 @@ private:
         return depth_image_;
     }
 
+    
+
     void odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg)
     {
         // Save odometry data to a member variable
@@ -148,16 +152,53 @@ private:
         
         DepthImage depth_image = depthImageFromPointcloud(pointcloud,lidar);
 
+        //ColorImage color_image = getColorImage();
+
         mapper.integrateLidarDepth(depth_image,transform, lidar);
 
         // // Produce the ESDF
         mapper.updateEsdf();
-        mapper.saveEsdfAsPly("./test.ply");
+        
+        // mapper.saveEsdfAsPly("./test.ply");
+        
+        //mapper.saveLayerCake("layerCake");
 
         checkCollision();
         
     }
 
+    void image_color_callback(const sensor_msgs::msg::Image::SharedPtr msg)
+    {
+        // Convert the ROS image data to ColorImage data
+        for (int row_idx = 0; row_idx < msg->height; ++row_idx)
+        {
+            for (int col_idx = 0; col_idx < msg->width; ++col_idx)
+            {
+                int index = row_idx * msg->step + col_idx * 3; // Calculate index for rgb8
+                uint8_t r = msg->data[index];
+                uint8_t g = msg->data[index + 1];
+                uint8_t b = msg->data[index + 2];
+
+                Color color(r, g, b);
+                color_image(row_idx, col_idx) = color;
+            }
+        }
+    }
+    
+    void image_depth_callback(const sensor_msgs::msg::Image::SharedPtr msg){
+        // Convert the ROS image data to DepthImage data
+        for (int row_idx = 0; row_idx < msg->height; ++row_idx)
+        {
+            for (int col_idx = 0; col_idx < msg->width; ++col_idx)
+            {
+                int index = row_idx * msg->step + col_idx * 2; // 2 bytes per pixel (16 bits)
+                uint16_t depth_value = msg->data[index] | (msg->data[index + 1] << 8); // Combine the two bytes
+
+                depth_image_camera(row_idx, col_idx) = static_cast<float>(depth_value) / 1000.0f; // Convert to meters if necessary
+            }
+        }
+    }
+    
     void create_transformation_matrix(const nav_msgs::msg::Odometry::SharedPtr msg)
     {
         
@@ -165,8 +206,7 @@ private:
                                 msg->pose.pose.position.y,
                                 msg->pose.pose.position.z;
 
-        // rotation_matrix = q.toRotationMatrix();
-
+        
         // Extract position and orientation from odometry for base_link in world frame
         Eigen::Isometry3f base_to_world = Eigen::Isometry3f::Identity();
         base_to_world.translation() << msg->pose.pose.position.x,
@@ -215,13 +255,13 @@ private:
         EsdfLayer& esdf_layer = mapper.esdf_layer(); 
         //cout<<"Robot Position: "<< position.transpose() <<endl;
 
-        for(float pos = 0.4f; pos<=5.0f; pos = pos + 0.2f){
+        for(float pos = 0.2f; pos<=5.0f; pos = pos + 0.2f){
             
             // Calculate the collision point untill 5 meters to the right
             collision_point = position + pos * world_right_vector;
             
             auto result = esdf_layer.getVoxel(collision_point);
-            
+            //cout<<collision_point.transpose()<<endl;
             if(result.first.observed && result.first.is_inside ){
                 RCLCPP_INFO(this->get_logger(), "Collision Point: x: %f, y: %f, z: %f",
                 collision_point.x(), collision_point.y(), collision_point.z());
@@ -260,9 +300,8 @@ private:
         collision_point_pub_->publish(point_msg);
     }
 
-    // const int num_azimuth_divisions = 1024;
-    // const int num_elevation_divisions = 32;
-    
+ 
+
     const int num_azimuth_divisions = 440;
     const int num_elevation_divisions = 900;
 
@@ -272,18 +311,37 @@ private:
 
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pc2_sub_;
-    // rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
+    rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_color_sub_;
+    rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_depth_sub_;
 
     rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr collision_point_pub_;
 
     nav_msgs::msg::Odometry last_odometry_;
     Eigen::Isometry3f transform = Eigen::Isometry3f::Identity();
-    Mapper mapper{0.3f, MemoryType::kDevice};
+    Mapper mapper{0.2f, MemoryType::kDevice};
 
     MapperParams params;
 
     Lidar lidar{num_azimuth_divisions, num_elevation_divisions, min_valid_range_m,
                           max_valid_range_m, vertical_fov_rad};
+
+
+    // Color camera intrinsic parameters
+    const float fu = 643.591796875;      // Focal length in the u (x/width) direction
+    const float fv = 642.68017578125;    // Focal length in the v (y/height) direction
+    const int width = 1280;              // Width of the image plane
+    const int height = 720;              // Height of the image plane
+    const float cu = 654.1656494140625;  // Principal point in the u (x/width) direction
+    const float cv = 362.5810241699219;  // Principal point in the v (y/height) direction
+    Camera camera{fu, fv, cu, cv, width, height};
+
+
+    //Color image from camera
+    ColorImage color_image{height, width, MemoryType::kUnified};
+
+    //Depth image from camera
+    DepthImage depth_image_camera{height, width, MemoryType::kUnified};
+
     Eigen::Vector3f collision_point;
     Eigen::Vector3f position = Eigen::Vector3f::Zero();  // Initialize to zero
     Eigen::Matrix3f rotation_matrix = Eigen::Matrix3f::Identity();  // Initialize to identity matrix
