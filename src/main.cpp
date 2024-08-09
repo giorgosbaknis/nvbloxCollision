@@ -4,6 +4,7 @@
 #include "sensor_msgs/point_cloud2_iterator.hpp"
 #include "geometry_msgs/msg/point_stamped.hpp"
 #include "sensor_msgs/msg/image.hpp" 
+#include "visualization_msgs/msg/marker.hpp"
 #include <Eigen/Geometry>
 
 //Nvblox test libs 
@@ -46,6 +47,8 @@ public:
         // Publisher for collision point
         collision_point_pub_ = this->create_publisher<geometry_msgs::msg::PointStamped>("/husky1/ouster/collision", 5);
 
+        
+
         params.esdf_slice_min_height = 0.0f;
         params.esdf_slice_max_height = 1.0f;
         params.esdf_slice_height = 1.0f;
@@ -63,8 +66,8 @@ public:
         params.mesh_integrator_min_weight = 0.0001;
         params.mesh_integrator_weld_vertices = true;
         params.esdf_integrator_min_weight = 0.0001;
-        params.esdf_integrator_max_site_distance_vox = 1.0;
-        params.esdf_integrator_max_distance_m = 2.0;
+        params.esdf_integrator_max_site_distance_vox = 1.0; //1.0
+        params.esdf_integrator_max_distance_m = 2.0; //2.0
 
 
         mapper.setMapperParams(params);
@@ -147,20 +150,24 @@ private:
             }
             
         }
-
         
         
-        DepthImage depth_image = depthImageFromPointcloud(pointcloud,lidar);
+        
+        //DepthImage depth_image = depthImageFromPointcloud(pointcloud,lidar);
 
-        mapper.integrateLidarDepth(depth_image,tf_lidar_to_world, lidar);
+        // mapper.integrateLidarDepth(depth_image,tf_lidar_to_world, lidar);
 
         //Camera integrate depth 
-        // mapper.integrateDepth(depth_image_camera, tf_camera_to_world, camera);
+       mapper.integrateDepth(depth_image_camera, tf_camera_to_world, camera);
+       mapper.integrateColor(color_image, tf_camera_to_world, camera);
 
-        // // Produce the ESDF
+        // Produce the esdf
         mapper.updateEsdf();
+        mapper.updateMesh(UpdateFullLayer::kNo,tf_camera_to_world);
         
-        
+        //OccupancyLayer& occupancy_layer = mapper.occupancy_layer();
+
+        mapper.saveMeshAsPly("./mesh.ply");
         // mapper.saveEsdfAsPly("./test.ply");
         
         //mapper.saveLayerCake("layerCake");
@@ -169,6 +176,7 @@ private:
         
     }
 
+    
     void image_color_callback(const sensor_msgs::msg::Image::SharedPtr msg)
     {
         // Convert the ROS image data to ColorImage data
@@ -195,7 +203,7 @@ private:
             {
                 int index = row_idx * msg->step + col_idx * 2; // 2 bytes per pixel (16 bits)
                 uint16_t depth_value = msg->data[index] | (msg->data[index + 1] << 8); // Combine the two bytes
-
+                //cout<<"depth value: "<<depth_value<<endl;
                 depth_image_camera(row_idx, col_idx) = static_cast<float>(depth_value) / 1000.0f; // Convert to meters if necessary
             }
         }
@@ -242,17 +250,19 @@ private:
 
         // Static transform from base_link to camera (camera frame)
         Eigen::Isometry3f base_to_camera = Eigen::Isometry3f::Identity();
-        // Translation is zero as per provided data
-        base_to_camera.translation() << 0.0, 0.0, 0.0;
+        // Set translation
+        base_to_camera.translation() << 0.1, 0.0, -0.1;
+        
+        // Set rotation
+        Eigen::Matrix3f rotation_matrix_camera;
+        rotation_matrix_camera << 0.0, 0.0, -1.0,
+                                1.0, 0.0,  0.0,
+                                0.0, 1.0,  0.0;
+        
 
-        // Rotation quaternion from provided transform data
-        Eigen::Quaternionf q_camera(0.9961947202682495, // w
-                                0.0,                 // x
-                                0.08715575188398361, // y
-                                0.0);                // z
-        base_to_camera.rotate(q_camera);
+        base_to_camera.rotate(rotation_matrix_camera);
 
-        // Combine transformations to get LiDAR to world
+        // Combine transformations to get camera to world
         tf_camera_to_world = base_to_world * base_to_camera;
 
     }
@@ -271,7 +281,7 @@ private:
         Eigen::Vector3f world_right_vector = rotation_matrix_odometry * right_vector;
 
         EsdfLayer& esdf_layer = mapper.esdf_layer(); 
-        
+        // OccupancyLayer& esdf_layer = mapper.occupancy_layer();
 
         for(float pos = 0.2f; pos<=5.0f; pos = pos + 0.2f){
             
@@ -333,6 +343,7 @@ private:
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_depth_sub_;
 
     rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr collision_point_pub_;
+    rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr esdf_marker_pub_; 
 
     nav_msgs::msg::Odometry last_odometry_;
     Eigen::Isometry3f tf_lidar_to_world = Eigen::Isometry3f::Identity();
