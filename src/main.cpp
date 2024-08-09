@@ -152,12 +152,14 @@ private:
         
         DepthImage depth_image = depthImageFromPointcloud(pointcloud,lidar);
 
-        //ColorImage color_image = getColorImage();
+        mapper.integrateLidarDepth(depth_image,tf_lidar_to_world, lidar);
 
-        mapper.integrateLidarDepth(depth_image,transform, lidar);
+        //Camera integrate depth 
+        // mapper.integrateDepth(depth_image_camera, tf_camera_to_world, camera);
 
         // // Produce the ESDF
         mapper.updateEsdf();
+        
         
         // mapper.saveEsdfAsPly("./test.ply");
         
@@ -202,7 +204,7 @@ private:
     void create_transformation_matrix(const nav_msgs::msg::Odometry::SharedPtr msg)
     {
         
-        position << msg->pose.pose.position.x,
+        position_odometry << msg->pose.pose.position.x,
                                 msg->pose.pose.position.y,
                                 msg->pose.pose.position.z;
 
@@ -218,7 +220,7 @@ private:
                                 msg->pose.pose.orientation.y,
                                 msg->pose.pose.orientation.z);
 
-        rotation_matrix = q_world.toRotationMatrix();
+        rotation_matrix_odometry = q_world.toRotationMatrix();
 
         base_to_world.rotate(q_world);
 
@@ -235,7 +237,23 @@ private:
         base_to_lidar.rotate(q_lidar);
 
         // Combine transformations to get LiDAR to world
-        transform = base_to_world * base_to_lidar;
+        tf_lidar_to_world = base_to_world * base_to_lidar;
+
+
+        // Static transform from base_link to camera (camera frame)
+        Eigen::Isometry3f base_to_camera = Eigen::Isometry3f::Identity();
+        // Translation is zero as per provided data
+        base_to_camera.translation() << 0.0, 0.0, 0.0;
+
+        // Rotation quaternion from provided transform data
+        Eigen::Quaternionf q_camera(0.9961947202682495, // w
+                                0.0,                 // x
+                                0.08715575188398361, // y
+                                0.0);                // z
+        base_to_camera.rotate(q_camera);
+
+        // Combine transformations to get LiDAR to world
+        tf_camera_to_world = base_to_world * base_to_camera;
 
     }
 
@@ -250,15 +268,15 @@ private:
         Eigen::Vector3f right_vector(0.0f, -1.0f, 0.0f); 
 
         // Transform the right vector into the world frame
-        Eigen::Vector3f world_right_vector = rotation_matrix * right_vector;
+        Eigen::Vector3f world_right_vector = rotation_matrix_odometry * right_vector;
 
         EsdfLayer& esdf_layer = mapper.esdf_layer(); 
-        //cout<<"Robot Position: "<< position.transpose() <<endl;
+        
 
         for(float pos = 0.2f; pos<=5.0f; pos = pos + 0.2f){
             
             // Calculate the collision point untill 5 meters to the right
-            collision_point = position + pos * world_right_vector;
+            collision_point = position_odometry + pos * world_right_vector;
             
             auto result = esdf_layer.getVoxel(collision_point);
             //cout<<collision_point.transpose()<<endl;
@@ -317,7 +335,8 @@ private:
     rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr collision_point_pub_;
 
     nav_msgs::msg::Odometry last_odometry_;
-    Eigen::Isometry3f transform = Eigen::Isometry3f::Identity();
+    Eigen::Isometry3f tf_lidar_to_world = Eigen::Isometry3f::Identity();
+    Eigen::Isometry3f tf_camera_to_world = Eigen::Isometry3f::Identity();
     Mapper mapper{0.2f, MemoryType::kDevice};
 
     MapperParams params;
@@ -343,8 +362,8 @@ private:
     DepthImage depth_image_camera{height, width, MemoryType::kUnified};
 
     Eigen::Vector3f collision_point;
-    Eigen::Vector3f position = Eigen::Vector3f::Zero();  // Initialize to zero
-    Eigen::Matrix3f rotation_matrix = Eigen::Matrix3f::Identity();  // Initialize to identity matrix
+    Eigen::Vector3f position_odometry = Eigen::Vector3f::Zero();  // Initialize to zero
+    Eigen::Matrix3f rotation_matrix_odometry = Eigen::Matrix3f::Identity();  // Initialize to identity matrix
 
     
 };
